@@ -13,6 +13,7 @@ package promise
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,7 +26,7 @@ type subscriber struct {
 type future struct {
 	value       interface{}
 	reason      error
-	state       State
+	state       uint32
 	subscribers []subscriber
 	locker      sync.Mutex
 }
@@ -42,7 +43,7 @@ func (p *future) Then(onFulfilled OnFulfilled, rest ...OnRejected) Promise {
 	}
 	next := New()
 	p.locker.Lock()
-	switch p.state {
+	switch State(p.state) {
 	case FULFILLED:
 		if onFulfilled == nil {
 			return &fulfilled{p.value}
@@ -97,8 +98,7 @@ func (p *future) State() State {
 
 func (p *future) resolve(value interface{}) {
 	p.locker.Lock()
-	if p.state == PENDING {
-		p.state = FULFILLED
+	if atomic.CompareAndSwapUint32(&p.state, uint32(PENDING), uint32(FULFILLED)) {
 		p.value = value
 		subscribers := p.subscribers
 		p.subscribers = nil
@@ -121,8 +121,7 @@ func (p *future) Resolve(value interface{}) {
 
 func (p *future) Reject(reason error) {
 	p.locker.Lock()
-	if p.state == PENDING {
-		p.state = REJECTED
+	if atomic.CompareAndSwapUint32(&p.state, uint32(PENDING), uint32(REJECTED)) {
 		p.reason = reason
 		subscribers := p.subscribers
 		p.subscribers = nil
