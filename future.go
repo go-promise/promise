@@ -4,7 +4,7 @@
  *                                                        *
  * future promise implementation for Go.                  *
  *                                                        *
- * LastModified: Sep 11, 2016                             *
+ * LastModified: Oct 2, 2016                              *
  * Author: Ma Bingyao <andot@hprose.com>                  *
  *                                                        *
 \**********************************************************/
@@ -12,7 +12,7 @@
 package promise
 
 import (
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -22,13 +22,12 @@ type subscriber struct {
 	next        Promise
 }
 
-type subscribers []subscriber
-
 type future struct {
 	value       interface{}
 	reason      error
-	state       uint32
-	subscribers subscribers
+	state       State
+	subscribers []subscriber
+	locker      sync.Mutex
 }
 
 // New creates a PENDING Promise object
@@ -42,7 +41,8 @@ func (p *future) Then(onFulfilled OnFulfilled, rest ...OnRejected) Promise {
 		onRejected = rest[0]
 	}
 	next := New()
-	switch State(p.state) {
+	p.locker.Lock()
+	switch p.state {
 	case FULFILLED:
 		if onFulfilled == nil {
 			return &fulfilled{p.value}
@@ -57,6 +57,7 @@ func (p *future) Then(onFulfilled OnFulfilled, rest ...OnRejected) Promise {
 		p.subscribers = append(p.subscribers,
 			subscriber{onFulfilled, onRejected, next})
 	}
+	p.locker.Unlock()
 	return next
 }
 
@@ -95,7 +96,9 @@ func (p *future) State() State {
 }
 
 func (p *future) resolve(value interface{}) {
-	if atomic.CompareAndSwapUint32(&p.state, uint32(PENDING), uint32(FULFILLED)) {
+	p.locker.Lock()
+	if p.state == PENDING {
+		p.state = FULFILLED
 		p.value = value
 		subscribers := p.subscribers
 		p.subscribers = nil
@@ -103,6 +106,7 @@ func (p *future) resolve(value interface{}) {
 			resolve(subscriber.next, subscriber.onFulfilled, value)
 		}
 	}
+	p.locker.Unlock()
 }
 
 func (p *future) Resolve(value interface{}) {
@@ -116,7 +120,9 @@ func (p *future) Resolve(value interface{}) {
 }
 
 func (p *future) Reject(reason error) {
-	if atomic.CompareAndSwapUint32(&p.state, uint32(PENDING), uint32(REJECTED)) {
+	p.locker.Lock()
+	if p.state == PENDING {
+		p.state = REJECTED
 		p.reason = reason
 		subscribers := p.subscribers
 		p.subscribers = nil
@@ -124,6 +130,7 @@ func (p *future) Reject(reason error) {
 			reject(subscriber.next, subscriber.onRejected, reason)
 		}
 	}
+	p.locker.Unlock()
 }
 
 func (p *future) Fill(promise Promise) {
